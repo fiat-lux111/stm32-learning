@@ -22,6 +22,7 @@ static uint8_t uart_rx_data = 0;
 
 static uint16_t light_dark_threshold = 2500;
 static uint8_t pwm_duty_percent = 50;
+static uint8_t pwm_auto_mode = 0;
 
 static void app_pwm_set_duty(uint8_t duty_percent)
 {
@@ -51,6 +52,12 @@ static void app_pwm_duty_down(void)
 	{
 		app_pwm_set_duty(pwm_duty_percent - PWM_DUTY_STEP);
 	}
+}
+
+static void app_pwm_set_by_adc(uint16_t adc_value)
+{
+	uint8_t duty_percent = (uint8_t)(adc_value * 100UL / 4095UL);
+	app_pwm_set_duty(duty_percent);
 }
 
 static void app_threshold_up(void)
@@ -90,10 +97,10 @@ void app_main(void){
 	uint32_t last_adc_time = 0;
 	uint32_t last_alarm_blink_time = 0;
 	uint8_t light_alarm_active = 0;
-	char message[64];
+	char message[96];
 	HAL_UART_Transmit(&huart1, (uint8_t*)"NEW FIRMWARE\r\n", 15, HAL_MAX_DELAY);
 
-	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm\r\n";
+	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual\r\n";
 	HAL_UART_Transmit(&huart1, (uint8_t *)start_message, strlen(start_message), HAL_MAX_DELAY);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 	app_pwm_set_duty(pwm_duty_percent);
@@ -114,7 +121,7 @@ void app_main(void){
 			}
 			else if (uart_rx_data == '?')
 			{
-				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm\r\n";
+				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual\r\n";
 				HAL_UART_Transmit(&huart1, (uint8_t *)reply, strlen(reply), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'a' || uart_rx_data == 'A')
@@ -143,19 +150,27 @@ void app_main(void){
 			}
 			else if (uart_rx_data == 'u' || uart_rx_data == 'U')
 			{
+				pwm_auto_mode = 0;
 				app_pwm_duty_up();
-				snprintf(message, sizeof(message), "PWM Duty: %u%%\r\n", pwm_duty_percent);
+				snprintf(message, sizeof(message), "PWM Manual, Duty: %u%%\r\n", pwm_duty_percent);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'd' || uart_rx_data == 'D')
 			{
+				pwm_auto_mode = 0;
 				app_pwm_duty_down();
-				snprintf(message, sizeof(message), "PWM Duty: %u%%\r\n", pwm_duty_percent);
+				snprintf(message, sizeof(message), "PWM Manual, Duty: %u%%\r\n", pwm_duty_percent);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'p' || uart_rx_data == 'P')
 			{
-				snprintf(message, sizeof(message), "PWM Duty: %u%%\r\n", pwm_duty_percent);
+				snprintf(message, sizeof(message), "PWM %s, Duty: %u%%\r\n", pwm_auto_mode ? "Auto" : "Manual", pwm_duty_percent);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 'm' || uart_rx_data == 'M')
+			{
+				pwm_auto_mode = !pwm_auto_mode;
+				snprintf(message, sizeof(message), "PWM Mode: %s\r\n", pwm_auto_mode ? "Auto" : "Manual");
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data != '\r' && uart_rx_data != '\n')
@@ -206,8 +221,12 @@ void app_main(void){
 			uint16_t adc_value = app_read_adc();
 			uint32_t voltage_mv = adc_value * 3300UL / 4095UL;
 			uint8_t is_dark = (adc_value > light_dark_threshold);
+			if (pwm_auto_mode)
+			{
+				app_pwm_set_by_adc(adc_value);
+			}
 
-			snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV, Threshold: %u\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold);
+			snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV, Threshold: %u, PWM: %u%% %s\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold, pwm_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
 			HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 
 			if (is_dark && !light_alarm_active)
