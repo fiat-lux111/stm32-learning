@@ -5,6 +5,7 @@
 
 extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim3;
 extern ADC_HandleTypeDef hadc1;
 
 static volatile uint8_t key_up_pressed_flag = 0;
@@ -16,8 +17,41 @@ static uint8_t uart_rx_data = 0;
 #define LIGHT_THRESHOLD_STEP 100U
 #define LIGHT_THRESHOLD_MIN 100U
 #define LIGHT_THRESHOLD_MAX 4000U
+#define PWM_DUTY_STEP 10U
+#define PWM_DUTY_MAX 100U
 
 static uint16_t light_dark_threshold = 2500;
+static uint8_t pwm_duty_percent = 50;
+
+static void app_pwm_set_duty(uint8_t duty_percent)
+{
+	if (duty_percent > PWM_DUTY_MAX)
+	{
+		duty_percent = PWM_DUTY_MAX;
+	}
+
+	uint32_t period = __HAL_TIM_GET_AUTORELOAD(&htim3) + 1UL;
+	uint32_t pulse = period * duty_percent / 100UL;
+
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
+	pwm_duty_percent = duty_percent;
+}
+
+static void app_pwm_duty_up(void)
+{
+	if (pwm_duty_percent + PWM_DUTY_STEP <= PWM_DUTY_MAX)
+	{
+		app_pwm_set_duty(pwm_duty_percent + PWM_DUTY_STEP);
+	}
+}
+
+static void app_pwm_duty_down(void)
+{
+	if (pwm_duty_percent >= PWM_DUTY_STEP)
+	{
+		app_pwm_set_duty(pwm_duty_percent - PWM_DUTY_STEP);
+	}
+}
 
 static void app_threshold_up(void)
 {
@@ -59,8 +93,10 @@ void app_main(void){
 	char message[64];
 	HAL_UART_Transmit(&huart1, (uint8_t*)"NEW FIRMWARE\r\n", 15, HAL_MAX_DELAY);
 
-	const char *start_message = "ADC alarm test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold\r\n";
+	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm\r\n";
 	HAL_UART_Transmit(&huart1, (uint8_t *)start_message, strlen(start_message), HAL_MAX_DELAY);
+	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+	app_pwm_set_duty(pwm_duty_percent);
 	//HAL_TIM_Base_Start_IT(&htim2);
 	HAL_UART_Receive_IT(&huart1, &uart_rx_data, 1);
 
@@ -78,7 +114,7 @@ void app_main(void){
 			}
 			else if (uart_rx_data == '?')
 			{
-				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold\r\n";
+				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm\r\n";
 				HAL_UART_Transmit(&huart1, (uint8_t *)reply, strlen(reply), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'a' || uart_rx_data == 'A')
@@ -103,6 +139,23 @@ void app_main(void){
 			else if (uart_rx_data == 't' || uart_rx_data == 'T')
 			{
 				snprintf(message, sizeof(message), "Threshold: %u\r\n", light_dark_threshold);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 'u' || uart_rx_data == 'U')
+			{
+				app_pwm_duty_up();
+				snprintf(message, sizeof(message), "PWM Duty: %u%%\r\n", pwm_duty_percent);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 'd' || uart_rx_data == 'D')
+			{
+				app_pwm_duty_down();
+				snprintf(message, sizeof(message), "PWM Duty: %u%%\r\n", pwm_duty_percent);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 'p' || uart_rx_data == 'P')
+			{
+				snprintf(message, sizeof(message), "PWM Duty: %u%%\r\n", pwm_duty_percent);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data != '\r' && uart_rx_data != '\n')
