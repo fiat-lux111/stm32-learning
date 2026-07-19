@@ -7,12 +7,33 @@ extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim2;
 extern ADC_HandleTypeDef hadc1;
 
-static volatile uint8_t key_pressed_flag = 0;
+static volatile uint8_t key_up_pressed_flag = 0;
+static volatile uint8_t key_down_pressed_flag = 0;
 static volatile uint8_t tim2_tick_flag = 0;
 static volatile uint8_t uart_rx_flag = 0;
 static uint8_t uart_rx_data = 0;
 
-#define LIGHT_DARK_THRESHOLD 2500U
+#define LIGHT_THRESHOLD_STEP 100U
+#define LIGHT_THRESHOLD_MIN 100U
+#define LIGHT_THRESHOLD_MAX 4000U
+
+static uint16_t light_dark_threshold = 2500;
+
+static void app_threshold_up(void)
+{
+	if (light_dark_threshold + LIGHT_THRESHOLD_STEP <= LIGHT_THRESHOLD_MAX)
+	{
+		light_dark_threshold += LIGHT_THRESHOLD_STEP;
+	}
+}
+
+static void app_threshold_down(void)
+{
+	if (light_dark_threshold >= LIGHT_THRESHOLD_MIN + LIGHT_THRESHOLD_STEP)
+	{
+		light_dark_threshold -= LIGHT_THRESHOLD_STEP;
+	}
+}
 
 static uint16_t app_read_adc(void)
 {
@@ -29,7 +50,8 @@ static uint16_t app_read_adc(void)
 }
 
 void app_main(void){
-	uint32_t key_count = 0;
+	uint32_t key_up_count = 0;
+	uint32_t key_down_count = 0;
 	uint32_t tim2_count = 0;
 	uint32_t last_adc_time = 0;
 	uint32_t last_alarm_blink_time = 0;
@@ -37,7 +59,7 @@ void app_main(void){
 	char message[64];
 	HAL_UART_Transmit(&huart1, (uint8_t*)"NEW FIRMWARE\r\n", 15, HAL_MAX_DELAY);
 
-	const char *start_message = "ADC alarm test start\r\nCommand: 1=toggle, ?=help, a=read adc\r\n";
+	const char *start_message = "ADC alarm test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold\r\n";
 	HAL_UART_Transmit(&huart1, (uint8_t *)start_message, strlen(start_message), HAL_MAX_DELAY);
 	//HAL_TIM_Base_Start_IT(&htim2);
 	HAL_UART_Receive_IT(&huart1, &uart_rx_data, 1);
@@ -56,7 +78,7 @@ void app_main(void){
 			}
 			else if (uart_rx_data == '?')
 			{
-				const char *reply = "Command: 1=toggle, ?=help, a=read adc\r\n";
+				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold\r\n";
 				HAL_UART_Transmit(&huart1, (uint8_t *)reply, strlen(reply), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'a' || uart_rx_data == 'A')
@@ -66,6 +88,23 @@ void app_main(void){
 				snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
+			else if (uart_rx_data == '+')
+			{
+				app_threshold_up();
+				snprintf(message, sizeof(message), "Threshold: %u\r\n", light_dark_threshold);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == '-')
+			{
+				app_threshold_down();
+				snprintf(message, sizeof(message), "Threshold: %u\r\n", light_dark_threshold);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 't' || uart_rx_data == 'T')
+			{
+				snprintf(message, sizeof(message), "Threshold: %u\r\n", light_dark_threshold);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
 			else if (uart_rx_data != '\r' && uart_rx_data != '\n')
 			{
 				snprintf(message, sizeof(message), "Unknown command: %c\r\n", uart_rx_data);
@@ -73,16 +112,28 @@ void app_main(void){
 			}
 		}
 
-		if (key_pressed_flag)
+		if (key_up_pressed_flag)
 		{
-			key_pressed_flag = 0;
-			HAL_UART_Transmit(&huart1, (uint8_t*)"KEY triggered\r\n", 15, HAL_MAX_DELAY);
+			key_up_pressed_flag = 0;
 			HAL_Delay(20);
 			if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_RESET)
 			{
-				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-				key_count++;
-				snprintf(message, sizeof(message), "EXTI Key Pressed: %lu\r\n", key_count);
+				key_up_count++;
+				app_threshold_up();
+				snprintf(message, sizeof(message), "KEY UP: %lu, Threshold: %u\r\n", key_up_count, light_dark_threshold);
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+		}
+
+		if (key_down_pressed_flag)
+		{
+			key_down_pressed_flag = 0;
+			HAL_Delay(20);
+			if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_2) == GPIO_PIN_RESET)
+			{
+				key_down_count++;
+				app_threshold_down();
+				snprintf(message, sizeof(message), "KEY DOWN: %lu, Threshold: %u\r\n", key_down_count, light_dark_threshold);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 		}
@@ -101,9 +152,9 @@ void app_main(void){
 			last_adc_time = HAL_GetTick();
 			uint16_t adc_value = app_read_adc();
 			uint32_t voltage_mv = adc_value * 3300UL / 4095UL;
-			uint8_t is_dark = (adc_value > LIGHT_DARK_THRESHOLD);
+			uint8_t is_dark = (adc_value > light_dark_threshold);
 
-			snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000);
+			snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV, Threshold: %u\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold);
 			HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 
 			if (is_dark && !light_alarm_active)
@@ -134,7 +185,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	if (GPIO_Pin == GPIO_PIN_1)
 	{
-		key_pressed_flag = 1;
+		key_up_pressed_flag = 1;
+	}
+	else if (GPIO_Pin == GPIO_PIN_2)
+	{
+		key_down_pressed_flag = 1;
 	}
 }
 
