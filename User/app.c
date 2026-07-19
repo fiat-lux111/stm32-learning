@@ -19,6 +19,7 @@ static uint8_t uart_rx_data = 0;
 #define LIGHT_THRESHOLD_MAX 4000U
 #define PWM_DUTY_STEP 10U
 #define PWM_DUTY_MAX 100U
+#define ADC_FILTER_SAMPLE_COUNT 10U
 
 static uint16_t light_dark_threshold = 2500;
 static uint8_t pwm_duty_percent = 50;
@@ -90,6 +91,19 @@ static uint16_t app_read_adc(void)
 	return adc_value;
 }
 
+static uint16_t app_read_adc_average(void)
+{
+	uint32_t adc_sum = 0;
+
+	for (uint8_t i = 0; i < ADC_FILTER_SAMPLE_COUNT; i++)
+	{
+		adc_sum += app_read_adc();
+		HAL_Delay(2);
+	}
+
+	return (uint16_t)(adc_sum / ADC_FILTER_SAMPLE_COUNT);
+}
+
 void app_main(void){
 	uint32_t key_up_count = 0;
 	uint32_t key_down_count = 0;
@@ -126,9 +140,9 @@ void app_main(void){
 			}
 			else if (uart_rx_data == 'a' || uart_rx_data == 'A')
 			{
-				uint16_t adc_value = app_read_adc();
+				uint16_t adc_value = app_read_adc_average();
 				uint32_t voltage_mv = adc_value * 3300UL / 4095UL;
-				snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000);
+				snprintf(message, sizeof(message), "ADC Avg: %u, Voltage: %lu.%03luV\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == '+')
@@ -218,7 +232,7 @@ void app_main(void){
 		if (HAL_GetTick() - last_adc_time >= 1000)
 		{
 			last_adc_time = HAL_GetTick();
-			uint16_t adc_value = app_read_adc();
+			uint16_t adc_value = app_read_adc_average();
 			uint32_t voltage_mv = adc_value * 3300UL / 4095UL;
 			uint8_t is_dark = (adc_value > light_dark_threshold);
 			if (pwm_auto_mode)
@@ -226,7 +240,7 @@ void app_main(void){
 				app_pwm_set_by_adc(adc_value);
 			}
 
-			snprintf(message, sizeof(message), "ADC Raw: %u, Voltage: %lu.%03luV, Threshold: %u, PWM: %u%% %s\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold, pwm_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
+			snprintf(message, sizeof(message), "ADC Avg: %u, Voltage: %lu.%03luV, Threshold: %u, PWM: %u%% %s\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold, pwm_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
 			HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 
 			if (is_dark && !light_alarm_active)
