@@ -18,11 +18,13 @@ static uint8_t uart_rx_data = 0;
 #define LIGHT_THRESHOLD_MIN 100U
 #define LIGHT_THRESHOLD_MAX 4000U
 #define PWM_DUTY_STEP 10U
-#define PWM_DUTY_MAX 100U
+#define PWM_DUTY_MAX 40U
+#define PWM_SMOOTH_STEP 2U
 #define ADC_FILTER_SAMPLE_COUNT 10U
 
 static uint16_t light_dark_threshold = 2500;
 static uint8_t pwm_duty_percent = 50;
+static uint8_t pwm_target_duty_percent = 50;
 static uint8_t pwm_auto_mode = 0;
 
 static void app_pwm_set_duty(uint8_t duty_percent)
@@ -39,26 +41,66 @@ static void app_pwm_set_duty(uint8_t duty_percent)
 	pwm_duty_percent = duty_percent;
 }
 
+static void app_pwm_set_target_duty(uint8_t duty_percent)
+{
+	if (duty_percent > PWM_DUTY_MAX)
+	{
+		duty_percent = PWM_DUTY_MAX;
+	}
+
+	pwm_target_duty_percent = duty_percent;
+}
+
+static void app_pwm_update_smooth(void)
+{
+	if (pwm_duty_percent < pwm_target_duty_percent)
+	{
+		uint8_t next_duty = pwm_target_duty_percent;
+		if (pwm_target_duty_percent - pwm_duty_percent > PWM_SMOOTH_STEP)
+		{
+			next_duty = pwm_duty_percent + PWM_SMOOTH_STEP;
+		}
+		app_pwm_set_duty(next_duty);
+	}
+	else if (pwm_duty_percent > pwm_target_duty_percent)
+	{
+		uint8_t next_duty = pwm_target_duty_percent;
+		if (pwm_duty_percent - pwm_target_duty_percent > PWM_SMOOTH_STEP)
+		{
+			next_duty = pwm_duty_percent - PWM_SMOOTH_STEP;
+		}
+		app_pwm_set_duty(next_duty);
+	}
+}
+
 static void app_pwm_duty_up(void)
 {
-	if (pwm_duty_percent + PWM_DUTY_STEP <= PWM_DUTY_MAX)
+	if (pwm_target_duty_percent + PWM_DUTY_STEP < PWM_DUTY_MAX)
 	{
-		app_pwm_set_duty(pwm_duty_percent + PWM_DUTY_STEP);
+		app_pwm_set_target_duty(pwm_target_duty_percent + PWM_DUTY_STEP);
+	}
+	else
+	{
+		app_pwm_set_target_duty(PWM_DUTY_MAX);
 	}
 }
 
 static void app_pwm_duty_down(void)
 {
-	if (pwm_duty_percent >= PWM_DUTY_STEP)
+	if (pwm_target_duty_percent > PWM_DUTY_STEP)
 	{
-		app_pwm_set_duty(pwm_duty_percent - PWM_DUTY_STEP);
+		app_pwm_set_target_duty(pwm_target_duty_percent - PWM_DUTY_STEP);
+	}
+	else
+	{
+		app_pwm_set_target_duty(0);
 	}
 }
 
 static void app_pwm_set_by_adc(uint16_t adc_value)
 {
 	uint8_t duty_percent = (uint8_t)(adc_value * 100UL / 4095UL);
-	app_pwm_set_duty(duty_percent);
+	app_pwm_set_target_duty(duty_percent);
 }
 
 static void app_threshold_up(void)
@@ -117,7 +159,8 @@ void app_main(void){
 	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual\r\n";
 	HAL_UART_Transmit(&huart1, (uint8_t *)start_message, strlen(start_message), HAL_MAX_DELAY);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-	app_pwm_set_duty(pwm_duty_percent);
+	app_pwm_set_target_duty(pwm_duty_percent);
+	app_pwm_set_duty(pwm_target_duty_percent);
 	//HAL_TIM_Base_Start_IT(&htim2);
 	HAL_UART_Receive_IT(&huart1, &uart_rx_data, 1);
 
@@ -166,19 +209,19 @@ void app_main(void){
 			{
 				pwm_auto_mode = 0;
 				app_pwm_duty_up();
-				snprintf(message, sizeof(message), "PWM Manual, Duty: %u%%\r\n", pwm_duty_percent);
+				snprintf(message, sizeof(message), "PWM Manual, Duty: %u%%, Target: %u%%\r\n", pwm_duty_percent, pwm_target_duty_percent);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'd' || uart_rx_data == 'D')
 			{
 				pwm_auto_mode = 0;
 				app_pwm_duty_down();
-				snprintf(message, sizeof(message), "PWM Manual, Duty: %u%%\r\n", pwm_duty_percent);
+				snprintf(message, sizeof(message), "PWM Manual, Duty: %u%%, Target: %u%%\r\n", pwm_duty_percent, pwm_target_duty_percent);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'p' || uart_rx_data == 'P')
 			{
-				snprintf(message, sizeof(message), "PWM %s, Duty: %u%%\r\n", pwm_auto_mode ? "Auto" : "Manual", pwm_duty_percent);
+				snprintf(message, sizeof(message), "PWM %s, Duty: %u%%, Target: %u%%\r\n", pwm_auto_mode ? "Auto" : "Manual", pwm_duty_percent, pwm_target_duty_percent);
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'm' || uart_rx_data == 'M')
@@ -240,7 +283,7 @@ void app_main(void){
 				app_pwm_set_by_adc(adc_value);
 			}
 
-			snprintf(message, sizeof(message), "ADC Avg: %u, Voltage: %lu.%03luV, Threshold: %u, PWM: %u%% %s\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold, pwm_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
+			snprintf(message, sizeof(message), "ADC Avg: %u, Voltage: %lu.%03luV, Threshold: %u, PWM: %u%%->%u%% %s\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold, pwm_duty_percent, pwm_target_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
 			HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 
 			if (is_dark && !light_alarm_active)
@@ -263,6 +306,8 @@ void app_main(void){
 			last_alarm_blink_time = HAL_GetTick();
 			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 		}
+
+		app_pwm_update_smooth();
 		HAL_Delay(100);
 	}
 }
