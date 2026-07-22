@@ -1,5 +1,6 @@
 #include "app.h"
 #include "main.h"
+#include "oled.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -7,6 +8,7 @@ extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
 extern ADC_HandleTypeDef hadc1;
+extern I2C_HandleTypeDef hi2c1;
 
 static volatile uint8_t key_up_pressed_flag = 0;
 static volatile uint8_t key_down_pressed_flag = 0;
@@ -146,6 +148,29 @@ static uint16_t app_read_adc_average(void)
 	return (uint16_t)(adc_sum / ADC_FILTER_SAMPLE_COUNT);
 }
 
+static void app_oled_show_status(uint16_t adc_value, uint32_t voltage_mv)
+{
+	char line[24];
+
+	oled_clear();
+	oled_set_cursor(0, 0);
+	snprintf(line, sizeof(line), "ADC:%u", adc_value);
+	oled_write_string(line);
+
+	oled_set_cursor(0, 2);
+	snprintf(line, sizeof(line), "V:%lu.%03luV", voltage_mv / 1000, voltage_mv % 1000);
+	oled_write_string(line);
+
+	oled_set_cursor(0, 4);
+	snprintf(line, sizeof(line), "PWM:%u->%u%%", pwm_duty_percent, pwm_target_duty_percent);
+	oled_write_string(line);
+
+	oled_set_cursor(0, 6);
+	snprintf(line, sizeof(line), "MODE:%s", pwm_auto_mode ? "AUTO" : "MANUAL");
+	oled_write_string(line);
+	oled_update();
+}
+
 void app_main(void){
 	uint32_t key_up_count = 0;
 	uint32_t key_down_count = 0;
@@ -158,6 +183,12 @@ void app_main(void){
 
 	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual\r\n";
 	HAL_UART_Transmit(&huart1, (uint8_t *)start_message, strlen(start_message), HAL_MAX_DELAY);
+	oled_init(&hi2c1);
+	oled_set_cursor(0, 0);
+	oled_write_string("HELLO OLED");
+	oled_set_cursor(0, 2);
+	oled_write_string("STM32 I2C OK");
+	oled_update();
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 	app_pwm_set_target_duty(pwm_duty_percent);
 	app_pwm_set_duty(pwm_target_duty_percent);
@@ -285,6 +316,7 @@ void app_main(void){
 
 			snprintf(message, sizeof(message), "ADC Avg: %u, Voltage: %lu.%03luV, Threshold: %u, PWM: %u%%->%u%% %s\r\n", adc_value, voltage_mv / 1000, voltage_mv % 1000, light_dark_threshold, pwm_duty_percent, pwm_target_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
 			HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			app_oled_show_status(adc_value, voltage_mv);
 
 			if (is_dark && !light_alarm_active)
 			{

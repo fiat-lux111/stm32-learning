@@ -1,0 +1,200 @@
+#include "oled.h"
+#include <string.h>
+
+#define OLED_I2C_ADDR 0x78U
+#define OLED_CONTROL_CMD 0x00U
+#define OLED_CONTROL_DATA 0x40U
+#define OLED_PAGES 8U
+#define OLED_CHAR_WIDTH 6U
+
+static I2C_HandleTypeDef *oled_i2c = NULL;
+static uint8_t oled_buffer[OLED_WIDTH * OLED_PAGES];
+static uint8_t oled_cursor_x = 0;
+static uint8_t oled_cursor_page = 0;
+
+static const uint8_t font_digits[10][5] = {
+	{0x3E, 0x51, 0x49, 0x45, 0x3E},
+	{0x00, 0x42, 0x7F, 0x40, 0x00},
+	{0x42, 0x61, 0x51, 0x49, 0x46},
+	{0x21, 0x41, 0x45, 0x4B, 0x31},
+	{0x18, 0x14, 0x12, 0x7F, 0x10},
+	{0x27, 0x45, 0x45, 0x45, 0x39},
+	{0x3C, 0x4A, 0x49, 0x49, 0x30},
+	{0x01, 0x71, 0x09, 0x05, 0x03},
+	{0x36, 0x49, 0x49, 0x49, 0x36},
+	{0x06, 0x49, 0x49, 0x29, 0x1E},
+};
+
+static const uint8_t font_upper[26][5] = {
+	{0x7E, 0x11, 0x11, 0x11, 0x7E},
+	{0x7F, 0x49, 0x49, 0x49, 0x36},
+	{0x3E, 0x41, 0x41, 0x41, 0x22},
+	{0x7F, 0x41, 0x41, 0x22, 0x1C},
+	{0x7F, 0x49, 0x49, 0x49, 0x41},
+	{0x7F, 0x09, 0x09, 0x09, 0x01},
+	{0x3E, 0x41, 0x49, 0x49, 0x7A},
+	{0x7F, 0x08, 0x08, 0x08, 0x7F},
+	{0x00, 0x41, 0x7F, 0x41, 0x00},
+	{0x20, 0x40, 0x41, 0x3F, 0x01},
+	{0x7F, 0x08, 0x14, 0x22, 0x41},
+	{0x7F, 0x40, 0x40, 0x40, 0x40},
+	{0x7F, 0x02, 0x0C, 0x02, 0x7F},
+	{0x7F, 0x04, 0x08, 0x10, 0x7F},
+	{0x3E, 0x41, 0x41, 0x41, 0x3E},
+	{0x7F, 0x09, 0x09, 0x09, 0x06},
+	{0x3E, 0x41, 0x51, 0x21, 0x5E},
+	{0x7F, 0x09, 0x19, 0x29, 0x46},
+	{0x46, 0x49, 0x49, 0x49, 0x31},
+	{0x01, 0x01, 0x7F, 0x01, 0x01},
+	{0x3F, 0x40, 0x40, 0x40, 0x3F},
+	{0x1F, 0x20, 0x40, 0x20, 0x1F},
+	{0x3F, 0x40, 0x38, 0x40, 0x3F},
+	{0x63, 0x14, 0x08, 0x14, 0x63},
+	{0x07, 0x08, 0x70, 0x08, 0x07},
+	{0x61, 0x51, 0x49, 0x45, 0x43},
+};
+
+static void oled_write_command(uint8_t command)
+{
+	uint8_t data[2] = {OLED_CONTROL_CMD, command};
+	HAL_I2C_Master_Transmit(oled_i2c, OLED_I2C_ADDR, data, sizeof(data), HAL_MAX_DELAY);
+}
+
+static void oled_get_char_bitmap(char ch, uint8_t bitmap[5])
+{
+	memset(bitmap, 0, 5);
+
+	if (ch >= '0' && ch <= '9')
+	{
+		memcpy(bitmap, font_digits[ch - '0'], 5);
+	}
+	else if (ch >= 'A' && ch <= 'Z')
+	{
+		memcpy(bitmap, font_upper[ch - 'A'], 5);
+	}
+	else if (ch >= 'a' && ch <= 'z')
+	{
+		memcpy(bitmap, font_upper[ch - 'a'], 5);
+	}
+	else if (ch == ':')
+	{
+		uint8_t temp[5] = {0x00, 0x36, 0x36, 0x00, 0x00};
+		memcpy(bitmap, temp, 5);
+	}
+	else if (ch == '.')
+	{
+		uint8_t temp[5] = {0x00, 0x60, 0x60, 0x00, 0x00};
+		memcpy(bitmap, temp, 5);
+	}
+	else if (ch == '%')
+	{
+		uint8_t temp[5] = {0x23, 0x13, 0x08, 0x64, 0x62};
+		memcpy(bitmap, temp, 5);
+	}
+	else if (ch == '-')
+	{
+		uint8_t temp[5] = {0x08, 0x08, 0x08, 0x08, 0x08};
+		memcpy(bitmap, temp, 5);
+	}
+	else if (ch == '>')
+	{
+		uint8_t temp[5] = {0x41, 0x22, 0x14, 0x08, 0x00};
+		memcpy(bitmap, temp, 5);
+	}
+}
+
+void oled_init(I2C_HandleTypeDef *hi2c)
+{
+	oled_i2c = hi2c;
+	HAL_Delay(100);
+
+	oled_write_command(0xAE);
+	oled_write_command(0x20);
+	oled_write_command(0x00);
+	oled_write_command(0xB0);
+	oled_write_command(0xC8);
+	oled_write_command(0x00);
+	oled_write_command(0x10);
+	oled_write_command(0x40);
+	oled_write_command(0x81);
+	oled_write_command(0x7F);
+	oled_write_command(0xA1);
+	oled_write_command(0xA6);
+	oled_write_command(0xA8);
+	oled_write_command(0x3F);
+	oled_write_command(0xA4);
+	oled_write_command(0xD3);
+	oled_write_command(0x00);
+	oled_write_command(0xD5);
+	oled_write_command(0x80);
+	oled_write_command(0xD9);
+	oled_write_command(0xF1);
+	oled_write_command(0xDA);
+	oled_write_command(0x12);
+	oled_write_command(0xDB);
+	oled_write_command(0x40);
+	oled_write_command(0x8D);
+	oled_write_command(0x14);
+	oled_write_command(0xAF);
+
+	oled_clear();
+	oled_update();
+}
+
+void oled_clear(void)
+{
+	memset(oled_buffer, 0, sizeof(oled_buffer));
+	oled_cursor_x = 0;
+	oled_cursor_page = 0;
+}
+
+void oled_update(void)
+{
+	for (uint8_t page = 0; page < OLED_PAGES; page++)
+	{
+		oled_write_command(0xB0 + page);
+		oled_write_command(0x00);
+		oled_write_command(0x10);
+
+		uint8_t data[OLED_WIDTH + 1];
+		data[0] = OLED_CONTROL_DATA;
+		memcpy(&data[1], &oled_buffer[OLED_WIDTH * page], OLED_WIDTH);
+		HAL_I2C_Master_Transmit(oled_i2c, OLED_I2C_ADDR, data, sizeof(data), HAL_MAX_DELAY);
+	}
+}
+
+void oled_set_cursor(uint8_t x, uint8_t page)
+{
+	oled_cursor_x = x;
+	oled_cursor_page = page;
+}
+
+void oled_write_string(const char *str)
+{
+	while (*str != '\0')
+	{
+		if (*str == '\n')
+		{
+			oled_cursor_x = 0;
+			oled_cursor_page++;
+			str++;
+			continue;
+		}
+
+		if (oled_cursor_page >= OLED_PAGES || oled_cursor_x + OLED_CHAR_WIDTH > OLED_WIDTH)
+		{
+			break;
+		}
+
+		uint8_t bitmap[5];
+		oled_get_char_bitmap(*str, bitmap);
+		uint16_t offset = OLED_WIDTH * oled_cursor_page + oled_cursor_x;
+		for (uint8_t i = 0; i < 5; i++)
+		{
+			oled_buffer[offset + i] = bitmap[i];
+		}
+		oled_buffer[offset + 5] = 0x00;
+		oled_cursor_x += OLED_CHAR_WIDTH;
+		str++;
+	}
+}
