@@ -23,11 +23,106 @@ static uint8_t uart_rx_data = 0;
 #define PWM_DUTY_MAX 40U
 #define PWM_SMOOTH_STEP 2U
 #define ADC_FILTER_SAMPLE_COUNT 10U
+#define APP_CONFIG_FLASH_ADDR 0x0800FC00UL
+#define APP_CONFIG_MAGIC 0x43464731UL
+#define APP_CONFIG_CHECK_VALUE 0xA5A55A5AUL
 
 static uint16_t light_dark_threshold = 2500;
 static uint8_t pwm_duty_percent = 50;
 static uint8_t pwm_target_duty_percent = 50;
 static uint8_t pwm_auto_mode = 0;
+
+static void app_pwm_set_duty(uint8_t duty_percent);
+static void app_pwm_set_target_duty(uint8_t duty_percent);
+
+typedef struct
+{
+	uint32_t magic;
+	uint16_t threshold;
+	uint8_t pwm_auto_mode;
+	uint8_t pwm_target_duty;
+	uint32_t checksum;
+} app_config_t;
+
+static uint32_t app_config_calc_checksum(const app_config_t *config)
+{
+	return config->magic ^ config->threshold ^ config->pwm_auto_mode ^ config->pwm_target_duty ^ APP_CONFIG_CHECK_VALUE;
+}
+
+static void app_config_apply_default(void)
+{
+	light_dark_threshold = 2500;
+	pwm_auto_mode = 0;
+	app_pwm_set_target_duty(40);
+	pwm_duty_percent = pwm_target_duty_percent;
+}
+
+static uint8_t app_config_load(void)
+{
+	const app_config_t *config = (const app_config_t *)APP_CONFIG_FLASH_ADDR;
+
+	if (config->magic != APP_CONFIG_MAGIC)
+	{
+		app_config_apply_default();
+		return 0;
+	}
+
+	if (config->checksum != app_config_calc_checksum(config))
+	{
+		app_config_apply_default();
+		return 0;
+	}
+
+	if (config->threshold < LIGHT_THRESHOLD_MIN || config->threshold > LIGHT_THRESHOLD_MAX ||
+		config->pwm_target_duty > PWM_DUTY_MAX || config->pwm_auto_mode > 1)
+	{
+		app_config_apply_default();
+		return 0;
+	}
+
+	light_dark_threshold = config->threshold;
+	pwm_auto_mode = config->pwm_auto_mode;
+	app_pwm_set_target_duty(config->pwm_target_duty);
+	pwm_duty_percent = pwm_target_duty_percent;
+	return 1;
+}
+
+static HAL_StatusTypeDef app_config_save(void)
+{
+	app_config_t config;
+	FLASH_EraseInitTypeDef erase_init;
+	uint32_t page_error = 0;
+	HAL_StatusTypeDef status;
+
+	config.magic = APP_CONFIG_MAGIC;
+	config.threshold = light_dark_threshold;
+	config.pwm_auto_mode = pwm_auto_mode;
+	config.pwm_target_duty = pwm_target_duty_percent;
+	config.checksum = app_config_calc_checksum(&config);
+
+	HAL_FLASH_Unlock();
+
+	erase_init.TypeErase = FLASH_TYPEERASE_PAGES;
+	erase_init.PageAddress = APP_CONFIG_FLASH_ADDR;
+	erase_init.NbPages = 1;
+	status = HAL_FLASHEx_Erase(&erase_init, &page_error);
+
+	if (status == HAL_OK)
+	{
+		const uint16_t *data = (const uint16_t *)&config;
+		for (uint32_t i = 0; i < sizeof(config) / sizeof(uint16_t); i++)
+		{
+			status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, APP_CONFIG_FLASH_ADDR + i * sizeof(uint16_t), data[i]);
+			if (status != HAL_OK)
+			{
+				break;
+			}
+		}
+	}
+
+	HAL_FLASH_Lock();
+	return status;
+}
 
 static void app_pwm_set_duty(uint8_t duty_percent)
 {
@@ -178,11 +273,15 @@ void app_main(void){
 	uint32_t last_adc_time = 0;
 	uint32_t last_alarm_blink_time = 0;
 	uint8_t light_alarm_active = 0;
+	uint8_t config_loaded = 0;
 	char message[96];
 	HAL_UART_Transmit(&huart1, (uint8_t*)"NEW FIRMWARE\r\n", 15, HAL_MAX_DELAY);
 
-	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual\r\n";
+	const char *start_message = "ADC + PWM test start\r\nCommand: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual, s=save, r=reset\r\n";
 	HAL_UART_Transmit(&huart1, (uint8_t *)start_message, strlen(start_message), HAL_MAX_DELAY);
+	config_loaded = app_config_load();
+	snprintf(message, sizeof(message), "Config %s, Threshold: %u, PWM Target: %u%%, Mode: %s\r\n", config_loaded ? "loaded" : "default", light_dark_threshold, pwm_target_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
+	HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 	oled_init(&hi2c1);
 	oled_set_cursor(0, 0);
 	oled_write_string("HELLO OLED");
@@ -190,7 +289,7 @@ void app_main(void){
 	oled_write_string("STM32 I2C OK");
 	oled_update();
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-	app_pwm_set_target_duty(pwm_duty_percent);
+	app_pwm_set_target_duty(pwm_target_duty_percent);
 	app_pwm_set_duty(pwm_target_duty_percent);
 	//HAL_TIM_Base_Start_IT(&htim2);
 	HAL_UART_Receive_IT(&huart1, &uart_rx_data, 1);
@@ -209,7 +308,7 @@ void app_main(void){
 			}
 			else if (uart_rx_data == '?')
 			{
-				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual\r\n";
+				const char *reply = "Command: 1=toggle, ?=help, a=read adc, +=threshold up, -=threshold down, t=threshold, u=pwm up, d=pwm down, p=pwm, m=auto/manual, s=save, r=reset\r\n";
 				HAL_UART_Transmit(&huart1, (uint8_t *)reply, strlen(reply), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data == 'a' || uart_rx_data == 'A')
@@ -259,6 +358,25 @@ void app_main(void){
 			{
 				pwm_auto_mode = !pwm_auto_mode;
 				snprintf(message, sizeof(message), "PWM Mode: %s\r\n", pwm_auto_mode ? "Auto" : "Manual");
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 's' || uart_rx_data == 'S')
+			{
+				if (app_config_save() == HAL_OK)
+				{
+					snprintf(message, sizeof(message), "Config saved: Threshold=%u, PWM=%u%%, Mode=%s\r\n", light_dark_threshold, pwm_target_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
+				}
+				else
+				{
+					snprintf(message, sizeof(message), "Config save failed\r\n");
+				}
+				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+			}
+			else if (uart_rx_data == 'r' || uart_rx_data == 'R')
+			{
+				app_config_apply_default();
+				app_pwm_set_duty(pwm_target_duty_percent);
+				snprintf(message, sizeof(message), "Config reset default: Threshold=%u, PWM=%u%%, Mode=%s\r\n", light_dark_threshold, pwm_target_duty_percent, pwm_auto_mode ? "Auto" : "Manual");
 				HAL_UART_Transmit(&huart1, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			}
 			else if (uart_rx_data != '\r' && uart_rx_data != '\n')
